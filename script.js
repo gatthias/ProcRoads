@@ -133,50 +133,560 @@ class Rect extends Entity {
     }
 }
 
-class NodeConnection {
-    constructor() {
 
-    }
-}
-
-class WayConnection {
-    constructor() {
-
-    }
-}
-
-// OR
 
 class RoadConnection {
-    constructor() {
+    constructor(node, segment) {
         this.position = new THREE.Vector3();
         this.tangent = new THREE.Vector3();
 
-        this.node = null;
-        this.segment = null;
+        this.node = node;
+        this.segment = segment;
     }
+
+    getSegmentOppositeSideConnection() {
+        var idx = this.segment.connections[0] == this ? 1 : 0;
+        return this.segment.connections[idx];
+    }
+
+    getNodePrevConnection() {
+        // XY CCW oriented
+        var sorted = this.node.getConnectionsCCW();
+        var idx = sorted.indexOf(this);
+        --idx;
+
+        if (idx == -1) idx = sorted.length - 1;
+
+        return sorted[idx];
+    }
+
+    getNodeNextConnection() {
+        // XY CCW oriented
+        var sorted = this.node.getConnectionsCCW();
+        var idx = sorted.indexOf(this);
+        ++idx;
+
+        if (idx > sorted.length - 1) idx = 0;
+
+        return sorted[idx];
+    }
+
+
 }
 
 class RoadNode {
-    constructor() {
+    constructor(store) {
+        this.store = store;
+
+        this.init();
+    }
+
+    init() {
         this.position = new THREE.Vector3();
         this.connections = [];
+
+
+        /** Params */
+        this.minArcRadius = 0;
+
+        this.shapes = [];
+
+
+        this.inputNode = null;
+
+        return this;
+    }
+
+    fromInputNode(inputNode) {
+        this.init();
+
+        this.position.copy(new THREE.Vector3(inputNode.location.x * 100, 0, inputNode.location.y * 100));
+
+        this.inputNode = inputNode;
+
+        return this;
+    }
+
+    createShapes(material) {
+        this.shapes = [];
+
+        var valency = this.valency;
+
+        if (valency <= 0) {
+            return;
+        } else if (valency == 1) {
+            // Dead-End
+
+        } else if (valency == 2) {
+            // Joint
+            var info = this.getAdjacentConnectionsGeometryInfo(this.connections[0], this.connections[1]);
+
+            var startConn = this.connections[0];
+            var endConn = this.connections[1];
+
+            var start = startConn.position;
+            var end = endConn.position;
+
+            var up = new THREE.Vector3(0, 1, 0);
+            var startBitan = new THREE.Vector3().crossVectors(startConn.tangent.clone(), up);
+            startBitan.normalize();
+            var endBitan = new THREE.Vector3().crossVectors(endConn.tangent.clone(), up);
+            endBitan.normalize();
+
+            var shape = new THREE.Shape();
+
+            var startLeft = start.clone().sub(startBitan.clone().multiplyScalar(startConn.segment.width / 2));
+            var startRight = start.clone().add(startBitan.clone().multiplyScalar(startConn.segment.width / 2));
+            var endRight = end.clone().add(endBitan.clone().multiplyScalar(endConn.segment.width / 2));
+            var endLeft = end.clone().sub(endBitan.clone().multiplyScalar(endConn.segment.width / 2));
+
+            if (info.sign == 1) {
+                // Intersection = StartRight = EndLeft
+                endLeft = startRight;
+
+                shape.moveTo(-startRight.x, startRight.z);
+                shape.lineTo(-startLeft.x, startLeft.z);
+                shape.lineTo(-endRight.x, endRight.z);
+
+                shape.lineTo(-endLeft.x, endLeft.z);
+
+            } else {
+                // Intersection = StartLeft = EndRight
+                endRight = startLeft;
+
+                shape.moveTo(-endRight.x, endRight.z);
+                shape.lineTo(-endLeft.x, endLeft.z);
+                //shape.lineTo(-startRight.x, startRight.z);
+
+                var cp1 = endLeft.clone().add(endConn.tangent.clone().normalize().multiplyScalar(-endConn.segment.width / Math.sqrt(2) * (1 - Math.cos(Math.PI - info.angle))));
+                var cp2 = startRight.clone().add(startConn.tangent.clone().normalize().multiplyScalar(-startConn.segment.width / Math.sqrt(2) * (1 - Math.cos(Math.PI - info.angle))));
+                shape.bezierCurveTo(-cp1.x, cp1.z, -cp2.x, cp2.z, -startRight.x, startRight.z);
+
+                shape.lineTo(-startLeft.x, startLeft.z);
+            }
+
+            var geometry = new THREE.ShapeGeometry(shape);
+            var mesh = new THREE.Mesh(geometry);//, material);
+            mesh.position.copy(this.position);
+            mesh.rotateX(-Math.PI / 2);
+            mesh.rotateZ(-Math.PI);
+            this.shapes.push(mesh);
+
+            var showGrid = true;
+            if (showGrid) {
+                var wire_material = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+                var wireframe = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), wire_material);
+                //var wireframe = new THREE.LineSegments( new THREE.WireframeGeometry(r), wire_material );
+                wireframe.position.copy(this.position);
+                wireframe.rotateX(-Math.PI / 2);
+                wireframe.rotateZ(-Math.PI);
+
+                this.shapes.push(wireframe);
+            }
+
+            return this.shapes;
+
+            //// Mirror forward or backward
+            //var angleMirrorFwd = Math.atan(startWidth / (dist * Math.cos(angleFromEnd)));
+            //var angleMirrorBck = Math.atan(endWidth / (dist * Math.cos(angleFromStart)));
+
+            //if (angleFromStart > angleMirrorFwd) {
+            //    // Mirror forward
+
+            //}
+
+            //if (angleFromEnd > angleMirrorBck) {
+            //    // Mirror backward
+
+            //}
+
+            //if (this.minArcRadius == 0) {
+
+            //} else {
+
+            //}
+
+        } else if (valency >= 2) {
+            // Intersection
+            var sorted = this.getConnectionsCCW();
+
+            var contour = sorted.map(conn => {
+                var up = new THREE.Vector3(0, 1, 0);
+                var bitan = new THREE.Vector3().crossVectors(conn.tangent.clone(), up);
+                bitan.normalize();
+
+                return [
+                    conn.position.clone().sub(bitan.clone().multiplyScalar(conn.segment.width/2)),
+                    conn.position.clone().add(bitan.clone().multiplyScalar(conn.segment.width/2)),
+                ];
+            }).reduce((cur, sel) => cur.concat(sel), []);
+
+            var shape = new THREE.Shape();
+
+            contour.map((pt, i) => {
+                if (i == 0) {
+                    shape.moveTo(-pt.x, pt.z);
+                } else {
+                    if (i % 2 == 0) {
+                        shape.lineTo(-pt.x, pt.z);
+                    } else {
+                        shape.lineTo(-pt.x, pt.z);
+                    }
+                }
+                if (i == contour.length - 1) {
+                    shape.lineTo(-contour[0].x, contour[0].z);
+                }
+            })
+            
+
+            var geometry = new THREE.ShapeGeometry(shape);
+            var mesh = new THREE.Mesh(geometry);//, material);
+            mesh.position.copy(this.position);
+            mesh.rotateX(-Math.PI / 2);
+            mesh.rotateZ(-Math.PI);
+            this.shapes.push(mesh);
+
+            var showGrid = true;
+            if (showGrid) {
+                var wire_material = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+                var wireframe = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), wire_material);
+                //var wireframe = new THREE.LineSegments( new THREE.WireframeGeometry(r), wire_material );
+                wireframe.position.copy(this.position);
+                wireframe.rotateX(-Math.PI / 2);
+                wireframe.rotateZ(-Math.PI);
+
+                this.shapes.push(wireframe);
+            }
+
+            return this.shapes;
+        }
+    }
+
+    getShapes(material) {
+        if (this.shapes.length == 0) this.createShapes(material);
+        return this.shapes;
+    }
+
+    updateConnections(autoCalcTangents) {
+        var valency = this.valency;
+
+        if (valency <= 0) {
+            return;
+        } else if (valency == 1) {
+            // Dead-End
+
+        } else if (valency == 2) {
+            // Joint
+            var startConn = this.connections[0];
+            var endConn = this.connections[1];
+
+            var info = this.getAdjacentConnectionsGeometryInfo(startConn, endConn);
+
+            if (autoCalcTangents) {
+                startConn.tangent.copy(info.start.tangent);
+                endConn.tangent.copy(info.end.tangent);
+            }
+
+            startConn.position.copy(info.start.tangent.clone().multiplyScalar(info.intersection.startOffset));
+            endConn.position.copy(info.end.tangent.clone().multiplyScalar(info.intersection.endOffset));
+        } else if (valency > 2) {
+            // Intersection
+            var sorted = this.getConnectionsCCW();
+
+            sorted.map(startConn => {
+                var prev = startConn.getNodePrevConnection();
+                var next = startConn.getNodeNextConnection();
+
+                var infos = [prev, next].map(endConn => this.getAdjacentConnectionsGeometryInfo(startConn, endConn));
+                
+                var end = infos[0].intersection.startOffset > infos[1].intersection.startOffset ? prev : next;
+                var info = infos[0].intersection.startOffset > infos[1].intersection.startOffset ? infos[0] : infos[1];
+
+                if (autoCalcTangents) {
+                    startConn.tangent.copy(info.start.tangent);
+                }
+
+                startConn.position.copy(info.start.tangent.clone().multiplyScalar(info.intersection.startOffset));
+            });
+        }
+    }
+
+    get valency() {
+        return this.connections.length;
+    }
+
+    //getConnectionsCCW() {
+    //    return this.connections.sort((a, b) => {
+    //        var aTan, bTan;
+    //        aTan = a.segment.getNaturalTangent(a);
+    //        bTan = b.segment.getNaturalTangent(b);
+
+    //        var abAngle = Math.atan2(bTan.z - aTan.z, bTan.x - aTan.x);
+    //        if (abAngle > 0) {
+    //            return 1;
+    //        } else if (abAngle < 0) {
+    //            return -1;
+    //        } else {
+    //            return 0;
+    //        }
+    //    });
+    //}
+
+    getConnectionsCCW() {
+        return this.connections.sort((a, b) => {
+            var aTan, bTan;
+            aTan = a.segment.getNaturalTangent(a);
+            bTan = b.segment.getNaturalTangent(b);
+
+            var aAngle = Math.atan2(aTan.z, aTan.x);
+            var bAngle = Math.atan2(bTan.z, bTan.x);
+
+            //var abAngle = Math.atan2(bTan.z - aTan.z, bTan.x - aTan.x);
+            var abAngle = aAngle - bAngle;
+            if (abAngle > 0) {
+                return 1;
+            } else if (abAngle < 0) {
+                return -1;
+            } else {
+                return 0;
+            }
+        });
+    }
+
+    getAdjacentConnectionsGeometryInfo(startConn, endConn) {
+        var startTan = startConn.segment.getNaturalTangent(startConn);
+        var endTan = endConn.segment.getNaturalTangent(endConn);
+
+        // Get closest intersection point
+        var startWidth = startConn.segment.width;
+        var endWidth = endConn.segment.width;
+
+        var startAngle = Math.atan2(startTan.z, startTan.x);
+        var endAngle = Math.atan2(endTan.z, endTan.x);
+
+        //var seAngle = Math.atan2(- endConn.tangent.z - startConn.tangent.z, - endConn.tangent.x - startConn.tangent.x);
+
+        var iStartAngle = startAngle + Math.PI;
+        if (iStartAngle > Math.PI) {
+            iStartAngle -= 2 * Math.PI;
+        }
+
+        var sign = iStartAngle > endAngle ? 1 : -1;
+        var seAngle = Math.abs(startAngle - endAngle);
+        
+        if (seAngle > Math.PI) {
+            seAngle = 2 * Math.PI - seAngle;
+        }
+
+        var widthRatio = (startWidth / endWidth);
+
+        var angleFromStart = Math.atan(widthRatio * Math.sin(seAngle) / (1 + widthRatio * Math.cos(seAngle)));
+        var angleFromEnd = seAngle - angleFromStart;
+        var dist = (startWidth / 2) / Math.sin(angleFromStart);
+
+        var intersectPoint = new THREE.Vector3(
+            dist * Math.cos(angleFromStart),
+            0,
+            dist * Math.sin(angleFromStart)
+        );
+
+        var startOffset = Math.sqrt(dist * dist - startWidth * startWidth / 4);
+        var endOffset = Math.sqrt(dist * dist - endWidth * endWidth / 4);
+
+        return {
+            start: {
+                tangent: startTan,
+                width: startWidth,
+                angle: startAngle
+            },
+            end: {
+                tangent: endTan,
+                width: endWidth,
+                angle: endAngle
+            },
+            angle: seAngle,
+            sign: sign,
+            widthRatio: widthRatio,
+            intersection: {
+                angleFromStart: angleFromStart,
+                angleFromEnd: angleFromEnd,
+                dist: dist,
+                startOffset: startOffset,
+                endOffset: endOffset,
+                position: intersectPoint
+            }
+        }
     }
 }
 
 class RoadWay {
-    constructor(wayInfo) {
+    constructor(store) {
+        this.store = store;
+
+        this.init();
+    }
+
+    init() {
         this.nodes = [];
 
         this.segments = [];
+
+        this.inputWay = null;
+
+        return this;
+    }
+
+    fromInputWay(inputWay) {
+        this.inputWay = inputWay;
+
+        this.nodes = inputWay.nodeRefs.map(nd => this.store.getNode(nd));
+
+        this.nodes.map((node, i) => {
+            if (i < this.nodes.length - 1) {
+                this.store.createSegmentForWay(node, this.nodes[i + 1], this);
+            }
+        })
+
+        return this;
     }
 }
 
 class RoadSegment {
     constructor(/* ..., */ roadWay) {
+        this.init(roadWay);
+    }
+
+    init(roadWay) {
         this.connections = [];
 
         this.way = roadWay;
+
+        this.width = (roadWay || {}).width || 100;
+        this.shapes = [];
+
+        return this;
+    }
+
+    createShapes(material) {
+        this.shapes = [];
+        
+
+        var start = this.connections[0].node.position.clone().add(this.connections[0].position);
+        var end = this.connections[1].node.position.clone().add(this.connections[1].position);
+
+
+        var rect = new Rect().fromPointsAndWidth(start, end, this.width);
+
+        var geom = new THREE.Geometry();
+
+        rect.addToGeom(geom);
+
+        geom.computeFaceNormals();
+
+        var object = new THREE.Mesh(geom, material);
+
+        this.shapes.push(object);
+
+        var showGrid = true;
+        if (showGrid) {
+            var wire_material = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+            var wireframe = new THREE.LineSegments(new THREE.EdgesGeometry(geom), wire_material);
+
+            this.shapes.push(wireframe);
+        }
+    }
+
+    getShapes(material) {
+        if (this.shapes.length == 0) this.createShapes(material);
+        return this.shapes;
+    }
+
+    getNaturalTangent(conn) {
+        var start = this.connections[0].node.position.clone();
+        var end = this.connections[1].node.position.clone();
+        var tan = end.clone().sub(start).normalize();
+
+        if (this.connections[1] == conn) {
+            tan.multiplyScalar(-1);
+        }
+
+        return tan;
+    }
+}
+
+class HashMap {
+    constructor() {
+
+    }
+
+    toArray() {
+        return Object.keys(this).map(k => {
+            if (this.hasOwnProperty(k)) {
+                return this[k];
+            }
+        }).filter(d => d != null);
+    }
+}
+class RoadDataStore {
+    constructor() {
+        this.nodes = [];
+        this.ways = [];
+        this.segments = [];
+    }
+
+    initFromInputData(data) {
+
+        data.nodes.map(inputNode => {
+            var node = new RoadNode(this).fromInputNode(inputNode);
+
+            this.nodes.push(node);
+        });
+
+        data.ways.map(inputWay => {
+            var way = new RoadWay(this).fromInputWay(inputWay);
+
+            this.ways.push(way);
+        });
+
+        this.nodes.map(node => {
+            node.updateConnections(true);
+        });
+
+        return this;
+    }
+
+    getNode(id) {
+        var node;
+        for (var i = 0; i < this.nodes.length; ++i) {
+            if (this.nodes[i].inputNode.id == id)
+                return this.nodes[i];
+        }
+        return null;
+    }
+    getWay(id) {
+        for (var i = 0; i < this.ways.length; ++i) {
+            if (this.ways[i].inputWay.id == id)
+                return this.ways[i];
+        }
+        return null;
+    }
+
+    createSegmentForWay(startNode, endNode, way) {
+        var segment = new RoadSegment(way);
+
+        // Connect
+        var startConn = new RoadConnection(startNode, segment);
+        segment.connections.push(startConn);
+        startNode.connections.push(startConn);
+
+        var endConn = new RoadConnection(endNode, segment);
+        segment.connections.push(endConn);
+        endNode.connections.push(endConn);
+
+        way.segments.push(segment);
+        this.segments.push(segment);
+
+        return segment;
     }
 }
 
@@ -235,13 +745,89 @@ class ProcRoadApp {
 
         this.initNodesAndWays();
 
+        var objects = this.scene.children.filter(o => o.userData.dataId != null);
+
+        this.dragControls = new THREE.DragControls(objects, this.camera, this.renderer.domElement);
+        this.dragControls.addEventListener('dragstart', (event) => {
+            event.object.position.y = 0;
+            controls.enabled = false;
+        });
+        this.dragControls.addEventListener('drag', (event) => {
+            event.object.position.y = 0;
+
+            var nodeId = event.object.userData.dataId.slice(2);
+            var node = this.store.getNode(nodeId);
+
+            this.updateNode(node, event.object);
+        });
+        this.dragControls.addEventListener('dragend', (event) => {
+            event.object.position.y = 0;
+            controls.enabled = true;
+
+
+            var nodeId = event.object.userData.dataId.slice(2);
+            var node = this.store.getNode(nodeId);
+
+            this.updateNode(node, event.object);
+        });
+
+
         document.addEventListener('mousemove', e => this.onDocumentMouseMove(e), false);
         document.addEventListener('click', e => this.onDocumentMouseClick(e), false);
         window.addEventListener('resize', () => this.onWindowResize(), false);
     }
 
+    updateNode(node, gizmo) {
+        if (!node || !gizmo) return;
+
+        node.position.copy(gizmo.position);
+
+        var shapesToUpdate = [];
+        shapesToUpdate = shapesToUpdate.concat(node.shapes);
+
+        node.connections.map(conn => shapesToUpdate = shapesToUpdate.concat(conn.segment.shapes));
+
+        shapesToUpdate.map(o => {
+            o.geometry.dispose();
+            this.scene.remove(o);
+        });
+
+        node.shapes = [];
+        node.connections.map(conn => conn.segment.shapes = []);
+
+        node.updateConnections(true);
+
+        var shapesToAdd = [];
+        shapesToAdd = shapesToAdd.concat(node.getShapes(this.baseMaterial));
+        node.connections.map(conn => shapesToAdd = shapesToAdd.concat(conn.segment.getShapes(this.baseMaterial)));
+
+        shapesToAdd.map(s => this.scene.add(s));
+    }
+
     initNodesAndWays() {
+        this.store = new RoadDataStore().initFromInputData(data);
+
+
+        this.store.nodes.map(node => {
+            // Create node representation
+            var mesh = this.createNodeCube(node);
+            this.scene.add(mesh);
+
+            // Create shapes
+            var shapes = node.getShapes(this.baseMaterial);
+
+            shapes.map(s => this.scene.add(s));
+        });
+
+        this.store.segments.map(segment => {
+            var shapes = segment.getShapes(this.baseMaterial);
+
+            shapes.map(s => this.scene.add(s));
+        });
+
+
         // Link nodes & ways
+        /*
         data.ways.map(way => {
             way.nodes = way.nodeRefs.map(nd => {
                 var node = getNodeById(nd);
@@ -280,16 +866,19 @@ class ProcRoadApp {
             
             
         });
+
+        */
     }
 
     createNodeCube(node) {
         var mesh = new THREE.Mesh(this.nodePlaceholderGeometry, new THREE.MeshNormalMaterial());
 
-        mesh.position.x = node.location.x * 100;
-        mesh.position.y = 5;
-        mesh.position.z = node.location.y * 100;
+        mesh.position.copy(node.position);
+        //mesh.position.x = node.location.x * 100;
+        //mesh.position.y = 5;
+        //mesh.position.z = node.location.y * 100;
 
-        mesh.userData.dataId = "n-"+node.id;
+        mesh.userData.dataId = "n-"+node.inputNode.id;
 
         return mesh;
     }
